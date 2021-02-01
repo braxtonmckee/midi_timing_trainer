@@ -50,40 +50,41 @@ def twiz(x, sz):
 
 class DrawGLScene:
 	def __init__(self):
-		self.input_port = mido.open_input('TD-25:TD-25 MIDI 1 28:0')
-		self.output_port = mido.open_output('TD-25:TD-25 MIDI 1 28:0')
+		name = [x for x in mido.get_input_names() if 'TD-25' in x][0]
+		self.input_port = mido.open_input(name)
+		self.output_port = mido.open_output(name)
 
 		self.draw_slices = 1
-		self.height = 700
+		self.height = 1000
 		self.width = 1600
 		self.pixel_width = 1
+		self.setParameters(80, 4, 2)
 
-		self.reset()
-		self.setBpm(80, 4)
-
-	def reset(self):
-		self.stream_t0 = time.time()
+	def setParameters(self, bpm, subdivisions, rows=None):
+		print(f"Setting BPM to {bpm} and subdivisions to {subdivisions}")
+		self.bpm = bpm
+		self.subdivisions = subdivisions
+		self.rows = rows or self.rows
+		
+		self.frame_0_timestamp = time.time()
 		self.frames = 0
 		self.last_draw_pos = 0
 
-	def setBpm(self, bpm, subdivisions):
-		print("BPM/SUB = ", bpm, subdivisions)
-		self.bpm = bpm
+		self.rowHeight = self.height // self.rows
 
 		self.secondsPerBeat = 60 / self.bpm		
-		self.subdivisions = subdivisions
 
 		self.totalBeats = 8
 
 		self.screenWidthInSeconds = self.secondsPerBeat * self.totalBeats
 
-		frames = self.width / self.pixel_width
+		frames = self.width // self.pixel_width
 
 		self.screenWidthInFrames = frames
 
 		self.draw_interval = self.screenWidthInSeconds / frames
-		self.samplesToDraw = numpy.zeros(self.height)
-
+		self.samplesToDraw = numpy.zeros(self.rowHeight)
+		
 	def keyPressed(self, *args):
 		ESCAPE = 27
 		print(args[0])
@@ -93,18 +94,16 @@ class DrawGLScene:
 			os._exit(0)
 
 		if args[0] == b"=":
-			self.reset()
-			self.setBpm(self.bpm + 1, self.subdivisions)
+			self.setParameters(self.bpm + 1, self.subdivisions)
+		
 		if args[0] == b"-":
-			self.reset()
-			self.setBpm(self.bpm - 1, self.subdivisions)
+			self.setParameters(self.bpm - 1, self.subdivisions)
 
 		if args[0] == b"]":
-			self.reset()
-			self.setBpm(self.bpm, self.subdivisions + 1)
+			self.setParameters(self.bpm, self.subdivisions + 1)
+		
 		if args[0] == b"[":
-			self.reset()
-			self.setBpm(self.bpm, self.subdivisions - 1)
+			self.setParameters(self.bpm, self.subdivisions - 1)
 
 	def __call__(self):
 		# Clear The Screen And The Depth Buffer
@@ -115,7 +114,7 @@ class DrawGLScene:
 	
 		t0 = time.time()
 		
-		if t0 - self.stream_t0 > self.last_draw_pos + self.draw_interval:
+		if t0 - self.frame_0_timestamp > self.last_draw_pos + self.draw_interval:
 			self.draw()
 			self.frames += 1
 			self.last_draw_pos += self.draw_interval
@@ -125,7 +124,7 @@ class DrawGLScene:
 			time.sleep(0.001)
 
 	def getCurSamples(self):
-		curSamples = numpy.zeros(self.height)
+		curSamples = numpy.zeros(self.rowHeight)
 
 		noteToRange = {
 			36: 1, #Kick
@@ -161,17 +160,20 @@ class DrawGLScene:
 			if msg.type == "note_on":
 				if msg.note in noteToRange:
 					r = noteToRange[msg.note]
-					velocityRatio = .2 + .8 * msg.velocity / 128
-					curSamples[r * self.height // maxRange: int((r+velocityRatio) * self.height / maxRange)] = 1.0
+					velocityRatio = .2 + 1.6 * msg.velocity / 128
+					curSamples[
+						r * self.rowHeight // maxRange
+					:	min(self.rowHeight, int((r+velocityRatio) * self.rowHeight / maxRange))
+					] = 1.0
 				else:
 					print("unknown note!", msg.note)
 
 		return curSamples
 		
-	def getTick(self, subdivisions):
+	def getTick(self, subdivisions, frameIx):
 		low, high = (
-			((self.draw_interval * self.frames) / self.secondsPerBeat) % 1.0, 
-			(self.draw_interval * (self.frames + 1) / self.secondsPerBeat) % 1.0
+			((self.draw_interval * frameIx) / self.secondsPerBeat) % 1.0, 
+			(self.draw_interval * (frameIx + 1) / self.secondsPerBeat) % 1.0
 		)
 
 		if high < low:
@@ -191,6 +193,32 @@ class DrawGLScene:
 		
 		return totalOverlap
 
+	def staffLineForFrame(self, frameIx):
+		"""Return an (r,g,) pixel line representing the subdivisions we should draw at a given frame"""
+		visualIntensityBeat = self.getTick(1, frameIx)
+		visualIntensityPrimary = self.getTick(self.subdivisions, frameIx)
+
+		if self.subdivisions == 4:
+			visualIntensitySecondary = self.getTick(6, frameIx)
+		else:
+			visualIntensitySecondary = 0.0
+
+		line = numpy.ones(self.rowHeight)
+
+		r = line * max(1.0 * visualIntensityBeat, .5 * visualIntensityPrimary)
+		g = line * max(1.0 * visualIntensityBeat, .5 * visualIntensityPrimary)
+		b = line * max(1.0 * visualIntensityBeat, .5 * visualIntensityPrimary)
+
+		line2 = line * 1
+		for i in range(10):
+			line2[i::20] = 0.0
+
+		r = numpy.maximum(r, line2 * visualIntensitySecondary * .5)
+		g = numpy.maximum(g, line2 * visualIntensitySecondary * .5)
+		b = numpy.maximum(b, line2 * visualIntensitySecondary * .5)
+
+		return r, g, b		
+
 	def draw(self):
 		try:
 			#compute some data
@@ -198,43 +226,36 @@ class DrawGLScene:
 			glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
 			glWindowPos2i(0,0)
 
-			# glCopyPixels(self.pixel_width, 0, 1024 - self.pixel_width, self.height, GL_COLOR)
-			
 			samplesToDraw = self.getCurSamples()
 			samplesToDraw = samplesToDraw + (self.samplesToDraw - .1).clip(0, None)
 
 			self.samplesToDraw = samplesToDraw
 
-			visualIntensityBeat = self.getTick(1)
-			visualIntensityPrimary = self.getTick(self.subdivisions)
+			r, g, b = self.staffLineForFrame(self.frames)
 
-			if self.subdivisions == 4:
-				visualIntensitySecondary = self.getTick(6)
-			else:
-				visualIntensitySecondary = 0.0
-
-			line = numpy.ones(self.height)
-
-			r = line * max(1.0 * visualIntensityBeat, .5 * visualIntensityPrimary)
-			g = line * max(1.0 * visualIntensityBeat, .5 * visualIntensityPrimary)
-			b = line * max(1.0 * visualIntensityBeat, .5 * visualIntensityPrimary)
-
-			line2 = line * 1
-			for i in range(10):
-				line2[i::20] = 0.0
-
-			r = numpy.maximum(r, line2 * visualIntensitySecondary * .5)
-			g = numpy.maximum(g, line2 * visualIntensitySecondary * .5)
-			b = numpy.maximum(b, line2 * visualIntensitySecondary * .5)
-			
 			r = (samplesToDraw + r).clip(None, 1.0)
 
-			if visualIntensityBeat > .01:
+			if self.getTick(1, self.frames) > .01:
 				self.sendNote(note=27, velocity=60)
+
+			curRow = self.frames // self.screenWidthInFrames
+			priorRow = (self.frames - 1) // self.screenWidthInFrames
+
+			if curRow != priorRow:
+				# copy the screen upwards
+				glWindowPos2i(0, self.rowHeight)
+				glCopyPixels(0, 0, self.width, self.height - self.rowHeight, GL_COLOR)
+
+				#clear the buffer
+				for offset in range(self.width):
+					r, g, b = self.staffLineForFrame(self.frames + offset)
+					for pix in range(self.pixel_width):
+						glWindowPos2i(offset * self.pixel_width + pix, 0)
+						glDrawPixels(1, self.rowHeight, GL_RGB, GL_FLOAT, twiz(numpy.concatenate([r,g,b]),3).astype('<f').tostring())
 
 			for pix in range(self.pixel_width):
 				glWindowPos2i(int((self.frames % self.screenWidthInFrames) * self.pixel_width) + pix, 0)
-				glDrawPixels(1, len(samplesToDraw), GL_RGB, GL_FLOAT, twiz(numpy.concatenate([r,g,b]),3).astype('<f').tostring())
+				glDrawPixels(1, self.rowHeight, GL_RGB, GL_FLOAT, twiz(numpy.concatenate([r,g,b]),3).astype('<f').tostring())
 				
 		except Exception as e:
 			traceback.print_exc(file=sys.stdout)

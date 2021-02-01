@@ -1,6 +1,8 @@
 import mido
 
+print("NAMES:")
 print(mido.get_input_names())
+print("----")
 
 input_port = mido.open_input('TD-25:TD-25 MIDI 1 28:0')
 output_port = mido.open_output('TD-25:TD-25 MIDI 1 28:0')
